@@ -1,0 +1,16 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.8.0
+torchvision==0.23.0
+torchaudio==2.8.0
+accelerate>=1.10.0
+diffusers @ git+https://github.com/huggingface/diffusers.git
+transformers>=4.55.0
+huggingface_hub>=0.34.0
+safetensors>=0.6.2
+sentencepiece>=0.2.0
+ftfy>=6.3.1
+peft>=0.17.0
+Pillow>=11.0.0
+imageio[ffmpeg]>=2.37.0
+requests>=2.32.0
+runpod>=1.8.1

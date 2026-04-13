@@ -1,0 +1,15 @@
+{
+  "input": {
+    "prompt": "YOUR_TRIGGER_WORD, cinematic image-to-video motion, stable framing, natural subject movement, realistic lighting, detailed skin and fabric textures.",
+    "image_url": "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/astronaut.jpg",
+    "resolution_preset": "720p",
+    "num_frames": 81,
+    "fps": 16,
+    "num_inference_steps": 10,
+    "guidance_scale": 5.0,
+    "guidance_scale_2": 6.0,
+    "flow_shift": 8.0,
+    "lora_scale": 1.0,
+    "seed": 42
+  }
+}
