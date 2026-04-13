@@ -32,6 +32,8 @@ PRESET_PIXELS = {
 }
 
 RESAMPLING_LANCZOS = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
+TRUE_VALUES = {"1", "true", "yes", "on"}
+FALSE_VALUES = {"0", "false", "no", "off"}
 
 
 def default_cache_root() -> Path:
@@ -77,6 +79,65 @@ def coerce_seed(seed: int | str | None) -> int:
 
 def get_default(name: str, fallback: str) -> str:
     return os.environ.get(name, fallback).strip()
+
+
+def env_flag(name: str, fallback: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return fallback
+    normalized = value.strip().lower()
+    if normalized in TRUE_VALUES:
+        return True
+    if normalized in FALSE_VALUES:
+        return False
+    return fallback
+
+
+def cuda_total_memory_gib() -> float:
+    if not torch.cuda.is_available():
+        return 0.0
+    return torch.cuda.get_device_properties(0).total_memory / (1024**3)
+
+
+def should_enable_cpu_offload() -> tuple[bool, float]:
+    total_vram_gib = cuda_total_memory_gib()
+    configured_value = get_default("WAN_ENABLE_MODEL_CPU_OFFLOAD", "true").lower()
+    force_on_large_gpu = env_flag("WAN_FORCE_CPU_OFFLOAD_ON_LARGE_GPU", False)
+    full_gpu_min_vram_gb = float(get_default("WAN_FULL_GPU_MIN_VRAM_GB", "70"))
+
+    if configured_value in FALSE_VALUES:
+        return False, total_vram_gib
+
+    if total_vram_gib >= full_gpu_min_vram_gb and not force_on_large_gpu:
+        LOGGER.info(
+            "Skipping CPU offload on a %.1f GiB GPU because WAN_FULL_GPU_MIN_VRAM_GB=%s",
+            total_vram_gib,
+            full_gpu_min_vram_gb,
+        )
+        return False, total_vram_gib
+
+    return True, total_vram_gib
+
+
+def configure_scheduler(pipe: WanImageToVideoPipeline, *, flow_shift: float, cpu_offload_enabled: bool) -> str:
+    scheduler_mode = get_default("WAN_SCHEDULER", "auto").lower()
+
+    if scheduler_mode not in {"auto", "default", "unipc"}:
+        raise ValueError("WAN_SCHEDULER must be one of: auto, default, unipc")
+
+    use_default_scheduler = scheduler_mode == "default" or (
+        scheduler_mode == "auto" and cpu_offload_enabled
+    )
+    if use_default_scheduler:
+        LOGGER.info(
+            "Using default scheduler %s%s",
+            pipe.scheduler.__class__.__name__,
+            " because CPU offload is enabled" if cpu_offload_enabled and scheduler_mode == "auto" else "",
+        )
+        return pipe.scheduler.__class__.__name__
+
+    pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config, flow_shift=flow_shift)
+    return pipe.scheduler.__class__.__name__
 
 
 def strip_data_uri(data: str) -> str:
@@ -251,6 +312,7 @@ def load_pipeline() -> tuple[WanImageToVideoPipeline, dict[str, Any]]:
         lora_target = get_default("CIVITAI_LORA_TARGET", "transformer_2").lower()
         lora_scale = float(get_default("WAN_DEFAULT_LORA_SCALE", "1.0"))
         api_key = os.environ.get("CIVITAI_API_KEY", "").strip()
+        cpu_offload_enabled, total_vram_gib = should_enable_cpu_offload()
 
         LOGGER.info("Loading Wan diffusers base %s", model_id)
         pipe = WanImageToVideoPipeline.from_pretrained(
@@ -265,11 +327,6 @@ def load_pipeline() -> tuple[WanImageToVideoPipeline, dict[str, Any]]:
                 pipe.vae.enable_tiling()
             if os.environ.get("WAN_ENABLE_VAE_SLICING", "true").strip().lower() == "true" and hasattr(pipe.vae, "enable_slicing"):
                 pipe.vae.enable_slicing()
-
-        if os.environ.get("WAN_ENABLE_MODEL_CPU_OFFLOAD", "true").strip().lower() == "true":
-            pipe.enable_model_cpu_offload()
-        else:
-            pipe.to("cuda")
 
         lora_path = download_civitai_lora(
             download_url=lora_url,
@@ -289,6 +346,11 @@ def load_pipeline() -> tuple[WanImageToVideoPipeline, dict[str, Any]]:
             pipe.transformer_2.load_lora_adapter(converted_lora, adapter_name=adapter_name)
         configure_lora_scale(pipe, lora_target, adapter_name, lora_scale)
 
+        if cpu_offload_enabled:
+            pipe.enable_model_cpu_offload()
+        else:
+            pipe.to("cuda")
+
         PIPELINE = pipe
         PIPELINE_STATE = {
             "model_id": model_id,
@@ -297,6 +359,8 @@ def load_pipeline() -> tuple[WanImageToVideoPipeline, dict[str, Any]]:
             "adapter_name": adapter_name,
             "cache_dir": str(cache_dir),
             "lora_path": str(lora_path),
+            "cpu_offload_enabled": cpu_offload_enabled,
+            "gpu_vram_gib": round(total_vram_gib, 2),
         }
         return PIPELINE, PIPELINE_STATE
 
@@ -339,11 +403,18 @@ def run_generation(job_input: dict[str, Any]) -> dict[str, Any]:
         max_sequence_length = int(job_input.get("max_sequence_length", 512))
 
         configure_lora_scale(pipe, pipe_state["lora_target"], pipe_state["adapter_name"], lora_scale)
-        pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config, flow_shift=flow_shift)
+        scheduler_name = configure_scheduler(
+            pipe,
+            flow_shift=flow_shift,
+            cpu_offload_enabled=bool(pipe_state.get("cpu_offload_enabled", False)),
+        )
 
-        generator = torch.Generator(device="cuda").manual_seed(seed)
+        execution_device = getattr(pipe, "_execution_device", None)
+        if execution_device is None:
+            execution_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        generator = torch.Generator(device=execution_device).manual_seed(seed)
         LOGGER.info(
-            "Generating video at %sx%s, frames=%s, steps=%s, guidance=(%s, %s), lora_scale=%s",
+            "Generating video at %sx%s, frames=%s, steps=%s, guidance=(%s, %s), lora_scale=%s, scheduler=%s, cpu_offload=%s",
             width,
             height,
             num_frames,
@@ -351,6 +422,8 @@ def run_generation(job_input: dict[str, Any]) -> dict[str, Any]:
             guidance_scale,
             guidance_scale_2,
             lora_scale,
+            scheduler_name,
+            pipe_state.get("cpu_offload_enabled", False),
         )
 
         output = pipe(
@@ -384,6 +457,7 @@ def run_generation(job_input: dict[str, Any]) -> dict[str, Any]:
             "video_filename": f"wan_civitai_{seed}.mp4",
             "model": {
                 "model_id": pipe_state["model_id"],
+                "gpu_vram_gib": pipe_state.get("gpu_vram_gib"),
             },
             "lora": {
                 "name": pipe_state["lora_name"],
@@ -405,5 +479,7 @@ def run_generation(job_input: dict[str, Any]) -> dict[str, Any]:
                 "guidance_scale_2": guidance_scale_2,
                 "flow_shift": flow_shift,
                 "seed": seed,
+                "scheduler": scheduler_name,
+                "cpu_offload_enabled": pipe_state.get("cpu_offload_enabled", False),
             },
         }

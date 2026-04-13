@@ -95,6 +95,9 @@ WAN_DEFAULT_GUIDANCE_SCALE_2=6.0
 WAN_DEFAULT_FLOW_SHIFT=8.0
 WAN_DEFAULT_LORA_SCALE=1.0
 WAN_ENABLE_MODEL_CPU_OFFLOAD=true
+WAN_FORCE_CPU_OFFLOAD_ON_LARGE_GPU=false
+WAN_FULL_GPU_MIN_VRAM_GB=70
+WAN_SCHEDULER=auto
 WAN_ENABLE_VAE_TILING=true
 WAN_ENABLE_VAE_SLICING=true
 WAN_INIT_TIMEOUT_S=3600
@@ -152,6 +155,8 @@ http://127.0.0.1:7863
 - frame counts are rounded to valid Wan lengths (`4n + 1`)
 - `guidance_scale_2` is exposed because Wan 2.2 uses a separate low-noise denoiser
 - this worker uses Diffusers directly instead of ComfyUI because it is a cleaner fit for an official Wan base plus one external LoRA
+- on large GPUs, the worker skips CPU offload by default even if `WAN_ENABLE_MODEL_CPU_OFFLOAD=true`; override with `WAN_FORCE_CPU_OFFLOAD_ON_LARGE_GPU=true` if you really want the old behavior
+- `WAN_SCHEDULER=auto` keeps UniPC on full-GPU runs but falls back to the model's default scheduler when CPU offload is active, which is safer for mixed-device execution
 
 ## Sources
 
