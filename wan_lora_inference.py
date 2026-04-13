@@ -12,11 +12,10 @@ from typing import Any
 import requests
 import safetensors.torch
 import torch
-from diffusers import AutoencoderKLWan, UniPCMultistepScheduler, WanImageToVideoPipeline
+from diffusers import UniPCMultistepScheduler, WanImageToVideoPipeline
 from diffusers.loaders.lora_conversion_utils import _convert_non_diffusers_wan_lora_to_diffusers
 from diffusers.utils import export_to_video
 from PIL import Image, ImageOps
-from transformers import CLIPVisionModel
 
 
 LOGGER = logging.getLogger("wan-civitai-worker")
@@ -254,24 +253,8 @@ def load_pipeline() -> tuple[WanImageToVideoPipeline, dict[str, Any]]:
         api_key = os.environ.get("CIVITAI_API_KEY", "").strip()
 
         LOGGER.info("Loading Wan diffusers base %s", model_id)
-        image_encoder = CLIPVisionModel.from_pretrained(
-            model_id,
-            subfolder="image_encoder",
-            torch_dtype=torch.float32,
-            cache_dir=str(cache_dir),
-            token=hf_token,
-        )
-        vae = AutoencoderKLWan.from_pretrained(
-            model_id,
-            subfolder="vae",
-            torch_dtype=torch.float32,
-            cache_dir=str(cache_dir),
-            token=hf_token,
-        )
         pipe = WanImageToVideoPipeline.from_pretrained(
             model_id,
-            image_encoder=image_encoder,
-            vae=vae,
             torch_dtype=torch.bfloat16,
             cache_dir=str(cache_dir),
             token=hf_token,
