@@ -86,6 +86,10 @@ CIVITAI_LORA_NAME=DR34ML4Y_I2V_14B_LOW_V2.safetensors
 CIVITAI_LORA_DOWNLOAD_URL=https://civitai.com/api/download/models/2553271
 CIVITAI_LORA_SHA256=066EE4BFAFB685C85F08174C8283CD11BC6D36F4845347F20D633AB44581601F
 CIVITAI_LORA_TARGET=transformer_2
+CIVITAI_LORA_MAX_RETRIES=5
+CIVITAI_LORA_RETRY_DELAY_S=15
+CIVITAI_LORA_REQUEST_TIMEOUT_S=300
+CIVITAI_LORA_CHUNK_SIZE_MB=8
 WAN_DEFAULT_RESOLUTION_PRESET=720p
 WAN_DEFAULT_NUM_FRAMES=81
 WAN_DEFAULT_FPS=16
@@ -155,6 +159,7 @@ http://127.0.0.1:7863
 - frame counts are rounded to valid Wan lengths (`4n + 1`)
 - `guidance_scale_2` is exposed because Wan 2.2 uses a separate low-noise denoiser
 - this worker uses Diffusers directly instead of ComfyUI because it is a cleaner fit for an official Wan base plus one external LoRA
+- the Civitai LoRA download now retries automatically on transient HTTP/network failures; if you attach a network volume, the cached LoRA is reused on later cold starts
 - on large GPUs, the worker skips CPU offload by default even if `WAN_ENABLE_MODEL_CPU_OFFLOAD=true`; override with `WAN_FORCE_CPU_OFFLOAD_ON_LARGE_GPU=true` if you really want the old behavior
 - `WAN_SCHEDULER=auto` keeps UniPC on full-GPU runs but falls back to the model's default scheduler when CPU offload is active, which is safer for mixed-device execution
 

@@ -5,6 +5,7 @@ import math
 import os
 import tempfile
 import threading
+import time
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -228,6 +229,7 @@ def download_civitai_lora(
 ) -> Path:
     ensure_directory(output_dir)
     destination = output_dir / filename
+    partial_destination = output_dir / f"{filename}.part"
 
     if destination.exists():
         if sha256:
@@ -245,23 +247,63 @@ def download_civitai_lora(
         raise ValueError("Missing CIVITAI_API_KEY for LoRA download.")
 
     headers = {"Authorization": f"Bearer {api_key}"}
-    LOGGER.info("Downloading LoRA to %s", destination)
-    with requests.get(download_url, headers=headers, stream=True, timeout=300, allow_redirects=True) as response:
-        response.raise_for_status()
-        total = int(response.headers.get("Content-Length", "0"))
-        downloaded = 0
-        with destination.open("wb") as handle:
-            for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
-                if not chunk:
-                    continue
-                handle.write(chunk)
-                downloaded += len(chunk)
-                if total and downloaded % (128 * 1024 * 1024) < len(chunk):
-                    LOGGER.info(
-                        "Downloaded %.2f GB / %.2f GB",
-                        downloaded / (1024**3),
-                        total / (1024**3),
-                    )
+    max_attempts = max(1, int(get_default("CIVITAI_LORA_MAX_RETRIES", "5")))
+    request_timeout_s = max(60, int(get_default("CIVITAI_LORA_REQUEST_TIMEOUT_S", "300")))
+    retry_delay_s = max(1.0, float(get_default("CIVITAI_LORA_RETRY_DELAY_S", "15")))
+    chunk_size_bytes = max(1, int(get_default("CIVITAI_LORA_CHUNK_SIZE_MB", "8"))) * 1024 * 1024
+
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        partial_destination.unlink(missing_ok=True)
+        LOGGER.info(
+            "Downloading LoRA to %s (attempt %s/%s)",
+            destination,
+            attempt,
+            max_attempts,
+        )
+        try:
+            with requests.get(
+                download_url,
+                headers=headers,
+                stream=True,
+                timeout=request_timeout_s,
+                allow_redirects=True,
+            ) as response:
+                response.raise_for_status()
+                total = int(response.headers.get("Content-Length", "0"))
+                downloaded = 0
+                with partial_destination.open("wb") as handle:
+                    for chunk in response.iter_content(chunk_size=chunk_size_bytes):
+                        if not chunk:
+                            continue
+                        handle.write(chunk)
+                        downloaded += len(chunk)
+                        if total and downloaded % (128 * 1024 * 1024) < len(chunk):
+                            LOGGER.info(
+                                "Downloaded %.2f GB / %.2f GB",
+                                downloaded / (1024**3),
+                                total / (1024**3),
+                            )
+            partial_destination.replace(destination)
+            last_error = None
+            break
+        except (requests.RequestException, OSError) as exc:
+            last_error = exc
+            partial_destination.unlink(missing_ok=True)
+            if attempt >= max_attempts:
+                break
+            sleep_seconds = retry_delay_s * (2 ** (attempt - 1))
+            LOGGER.warning(
+                "LoRA download attempt %s/%s failed: %s. Retrying in %.1fs",
+                attempt,
+                max_attempts,
+                exc,
+                sleep_seconds,
+            )
+            time.sleep(sleep_seconds)
+
+    if last_error is not None:
+        raise last_error
 
     if sha256:
         downloaded_hash = compute_sha256(destination)
